@@ -42,6 +42,8 @@ SOFTWARE.
 #elif defined(_WIN32)
  #define WIN32_LEAN_AND_MEAN
  #include <windows.h>
+ #include <intrin.h>
+ #pragma intrinsic(__rdtsc)
 #elif defined(__unix__) || defined(__linux__) && !defined(__APPLE__)
  #include <unistd.h>
  #if defined (_POSIX_TIMERS) && _POSIX_TIMERS > 0
@@ -58,13 +60,19 @@ SOFTWARE.
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
-static int chronos_nanotime(lua_State *L){
+static int chronos_time(lua_State *L){
     lua_pushnumber(L,emscripten_get_now()/1000.0);
     return 1;
 }
 
+static int chronos_interval(lua_State * L)
+{
+    lua_pushnumber(L, static_cast<lua_Number>(0.0));
+    return 1;
+}
+
 #elif !defined(__APPLE__) && (defined(__unix__) || defined(__linux__))
-static int chronos_nanotime(lua_State *L)
+static int chronos_time(lua_State *L)
 {
 #ifdef HAVE_CLOCK_GETTIME
     /** From man clock_gettime(2)
@@ -106,33 +114,93 @@ static int chronos_nanotime(lua_State *L)
 #endif
 }
 
-
-#elif defined(_WIN32)
-static int chronos_nanotime(lua_State * L)
+static int chronos_interval(lua_State * L)
 {
-    // See http://msdn.microsoft.com/en-us/library/windows/desktop/dn553408(v=vs.85).aspx
-    LARGE_INTEGER timer;
-    LARGE_INTEGER freq;
-    static double multiplier;
-    static int init = 1;
-
-    /* Though bool, guaranteed to not return an error after WinXP,
-     and the alternatives have fairly crappy resolution.
-     However, if you're on XP, you've got bigger problems than timing.
-    */
-    (void) QueryPerformanceCounter(&timer);
-    if(init){
-        QueryPerformanceFrequency(&freq);
-        multiplier = 1.0 / (double)freq.QuadPart;
-        init = 0;
-    }
-    lua_pushnumber(L, (lua_Number)(timer.QuadPart * multiplier));
+    lua_pushnumber(L, static_cast<lua_Number>(0.0));
     return 1;
 }
 
+#elif defined(_WIN32)
+// qpc: https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
+// tsc: https://github.com/cmuratori/computer_enhance
+
+static int64_t get_qpc_frequency()
+{
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    return frequency.QuadPart;
+}
+
+static const int64_t qpc_frequency = get_qpc_frequency();
+static const double qpc_period = 1.0 / get_qpc_frequency();
+
+static int chronos_time(lua_State* L)
+{
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    lua_pushnumber(L, static_cast<lua_Number>(counter.QuadPart * qpc_period));
+    return 1;
+}
+
+static int chronos_frequency(lua_State* L)
+{
+    lua_pushinteger(L, static_cast<lua_Integer>(qpc_frequency));
+    return 1;
+}
+
+static int chronos_decimals(lua_State* L)
+{
+    int decimals = 9;
+    int a = static_cast<int>((1000000000.0 / qpc_frequency) + .5);
+    int b = a / 10;
+    while (a == b * 10)
+    {
+        a = b;
+        b = a / 10;
+        --decimals;
+    }
+    lua_pushinteger(L, static_cast<lua_Integer>(decimals));
+    return 1;
+}
+
+static double estimate_tsc_frequency(const int64_t wait_ms)
+{
+    const int64_t qpc_wait = (qpc_frequency * wait_ms) / 1000;
+    const int64_t tsc_begin = __rdtsc();
+    LARGE_INTEGER qpc_begin;
+    LARGE_INTEGER qpc_end;
+    QueryPerformanceCounter(&qpc_begin);
+    int64_t qpc_elapsed = 0;
+    while (qpc_elapsed < qpc_wait)
+    {
+        QueryPerformanceCounter(&qpc_end);
+        qpc_elapsed = qpc_end.QuadPart - qpc_begin.QuadPart;
+    }
+    const int64_t tsc_end = __rdtsc();
+    const int64_t tsc_elapsed = tsc_end - tsc_begin;
+    return qpc_elapsed ? (qpc_frequency * tsc_elapsed) / static_cast<double>(qpc_elapsed) : 1.0;
+}
+
+static int chronos_tsc(lua_State* L)
+{
+    lua_pushinteger(L, static_cast<lua_Integer>(__rdtsc()));
+    return 1;
+}
+
+static int chronos_tsc_time(lua_State* L)
+{
+    const lua_Integer end = static_cast<lua_Integer>(__rdtsc());
+    const lua_Integer begin = luaL_checkinteger(L, 1);
+    const lua_Integer elapsed = end - begin;
+    const int64_t wait_ms = static_cast<int64_t>(luaL_optinteger(L, 2, 100));
+    const double frequency = estimate_tsc_frequency(wait_ms);
+    lua_pushnumber(L, static_cast<lua_Number>(elapsed / frequency));
+    lua_pushnumber(L, static_cast<lua_Number>(frequency));
+    return 2;
+}
 
 #elif defined(__APPLE__) && defined(__MACH__)
-static int chronos_nanotime(lua_State * L)
+static int chronos_time(lua_State * L)
 {
     //TODO All the apple stuff is untested because, like, I don't even got Apple.
     //If like, you have a mac, let me know whether this works.
@@ -161,13 +229,23 @@ static int chronos_nanotime(lua_State * L)
     return 1;
 #endif
 }
+
+static int chronos_interval(lua_State * L)
+{
+    lua_pushnumber(L, static_cast<lua_Number>(0.0));
+    return 1;
+}
 #else
 #undef CHRONOS_CLOCK_SUPPORTED
 #endif
 
 #ifdef CHRONOS_CLOCK_SUPPORTED
 static const struct luaL_reg Module_methods[] = {
-    {"nanotime", chronos_nanotime},
+    {"time", chronos_time},
+    {"frequency", chronos_frequency},
+    {"decimals", chronos_decimals},
+    {"tsc", chronos_tsc},
+    {"tsc_time", chronos_tsc_time},
     {NULL, NULL}
 };
 

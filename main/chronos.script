@@ -1,57 +1,42 @@
 function init(self)
-	if chronos then
-		print("CHRONOS SUPPORTED")
-	else
-		print("CHRONOS NOT SUPPORTED")
+	if not chronos then
+		print('chronos is not supported on this platform')
+		return
 	end
-end
 
-function final(self)
-	-- Add finalization code here
-	-- Learn more: https://defold.com/manuals/script/
-	-- Remove this function if not needed
-end
+	local socket_gettime = socket.gettime
+	local chronos_time = chronos.time
+	local chronos_tsc = chronos.tsc
+	local chronos_tsc_time = chronos.tsc_time
 
-function update(self, dt)
-	if chronos then
-		local time = chronos.nanotime()
-		local a = 1
-		for i=1,10000 do
-			a = a + 1
-		end
-		print("seconds:" .. chronos.nanotime() - time)
+	local frequency = chronos.frequency()
+	local decimals = chronos.decimals()
+	print(string.format('frequency: %d', frequency))
+	print(string.format('decimals: %d', decimals))
+
+	local start_gettime = socket_gettime()
+	local start_time = chronos_time()
+	local start_tsc = chronos_tsc()
+	local tsc_overhead = chronos_tsc_time(start_tsc)
+	print('starting values:')
+	print(string.format('socket.gettime: %.7f', start_gettime))
+	print(string.format('chronos.time:   %.' .. decimals .. 'f', start_time))
+	print(string.format('chronos.tsc:    %d', start_tsc))
+	print(string.format('tsc call overhead: ~%.9f', tsc_overhead))
+
+	local function on_second()
+		local gettime = socket_gettime()
+		local time = chronos_time()
+		local tsc_time, tsc_frequency = chronos_tsc_time(start_tsc)
+		print(string.format('socket.gettime: %.7f', gettime - start_gettime))
+		print(string.format('chronos.time:   %.' .. decimals .. 'f', time - start_time))
+		print(string.format('chronos.tsc:    %.9f (frequency ~%.6fMhz)', tsc_time, tsc_frequency / 1000000))
 	end
-end
 
-function fixed_update(self, dt)
-	-- This function is called if 'Fixed Update Frequency' is enabled in the Engine section of game.project
-	-- Can be coupled with fixed updates of the physics simulation if 'Use Fixed Timestep' is enabled in
-	-- Physics section of game.project
-	-- Add update code here
-	-- Learn more: https://defold.com/manuals/script/
-	-- Remove this function if not needed
-end
-
-function on_message(self, message_id, message, sender)
-	-- Add message-handling code here
-	-- Learn more: https://defold.com/manuals/message-passing/
-	-- Remove this function if not needed
-end
-
-function on_input(self, action_id, action)
-	-- Add input-handling code here. The game object this script is attached to
-	-- must have acquired input focus:
-	--
-	--    msg.post(".", "acquire_input_focus")
-	--
-	-- All mapped input bindings will be received. Mouse and touch input will
-	-- be received regardless of where on the screen it happened.
-	-- Learn more: https://defold.com/manuals/input/
-	-- Remove this function if not needed
-end
-
-function on_reload(self)
-	-- Add reload-handling code here
-	-- Learn more: https://defold.com/manuals/hot-reload/
-	-- Remove this function if not needed
+	local initial_delay = 1 - (chronos_time() - start_time)
+	timer.delay(initial_delay, false, function()
+		print('time passed:')
+		on_second()
+		timer.delay(1, true, on_second)
+	end)
 end
